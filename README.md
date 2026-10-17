@@ -1,7 +1,5 @@
 # RUN_GUIDE: How to run `sdn-qos-ppo`
 
-This file is a step-by-step runbook. It is written so that a person or an AI agent with no prior context can set up, train, evaluate, and run the live experiment.
-
 ## 0. What this project is
 
 An SDN controller (Ryu) that chooses a route for each flow using a PPO reinforcement-learning agent. It is tested on an emulated six-switch Mininet network with redundant paths.
@@ -210,7 +208,7 @@ Report the average per mode.
 | First `ping` shows packet loss | Normal. The controller installs flows on the first packets. Repeat the ping. |
 | Copying the repo from Windows throws errors on `.venv-ryu` | Virtual environments must not be copied. Exclude `.venv*` and recreate them in WSL (Section 3). |
 
-## 9. Notes for an AI agent running this project
+## 9. Notes 
 
 - The project cannot run on native Windows for the live stage. Use WSL2 or Linux with root access.
 - Two separate Python environments are required: `.venv` (Python 3.12, training and evaluation) and `.venv-ryu` (Python 3.10 or 3.11, controller). Do not mix them.
