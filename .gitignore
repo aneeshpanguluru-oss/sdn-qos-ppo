@@ -1,0 +1,17 @@
+﻿__pycache__/
+*.pyc
+venv/
+.venv/
+runs/
+logs/
+wandb/
+checkpoints/
+*.pt
+*.pth
+*.pcap
+*.log
+.ipynb_checkpoints/
+
+.venv*/
+__pycache__/
+*.pyc

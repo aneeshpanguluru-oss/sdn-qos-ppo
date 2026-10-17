@@ -1,0 +1,5 @@
+# Ryu 4.34 is not compatible with Python 3.12 packaging.
+# Install this file only in a Python 3.10 or 3.11 virtual environment.
+# The published 4.34 release imports an Eventlet API that newer Eventlet
+# versions removed. The upstream source contains the compatibility fix.
+git+https://github.com/faucetsdn/ryu.git

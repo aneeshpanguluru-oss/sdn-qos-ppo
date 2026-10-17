@@ -1,0 +1,6 @@
+gymnasium>=1.0,<2.0
+numpy>=1.26,<3.0
+networkx>=3.2,<4.0
+stable-baselines3>=2.4,<3.0
+torch>=2.3
+pytest>=8.0
