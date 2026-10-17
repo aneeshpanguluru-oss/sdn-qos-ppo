@@ -1,6 +1,8 @@
 """Ryu controller foundation for live QoS measurements and PPO routing decisions.
 
 Run after training: PYTHONPATH=src ryu-manager sdn_rl.ryu_app
+
+ROUTING_MODE: ppo (default) | minhop (fewest switches) | shortest (lowest total delay)
 """
 
 from __future__ import annotations
@@ -41,17 +43,19 @@ class QosPpoController(app_manager.RyuApp):
         self.datapaths = {}
         self.port_bytes = defaultdict(int)
         self.port_utilization = defaultdict(float)
-        self.last_sample_time = time.monotonic()
+        self.last_sample_time = {}
         self.routing_mode = os.environ.get("ROUTING_MODE", "ppo").lower()
-        if self.routing_mode not in {"ppo", "shortest"}:
-            raise ValueError("ROUTING_MODE must be 'ppo' or 'shortest'")
+        if self.routing_mode not in {"ppo", "shortest", "minhop"}:
+            raise ValueError("ROUTING_MODE must be 'ppo', 'shortest' or 'minhop'")
         self.flow_demand_mbps = float(os.environ.get("FLOW_DEMAND_MBPS", "10"))
         if not 0.0 < self.flow_demand_mbps <= MAX_DEMAND_MBPS:
             raise ValueError(f"FLOW_DEMAND_MBPS must be in (0, {MAX_DEMAND_MBPS}]")
         self.logger.info("Routing mode: %s", self.routing_mode)
         self.policy = self._load_policy() if self.routing_mode == "ppo" else None
         if self.routing_mode == "shortest":
-            self.logger.info("Shortest-path baseline selected; PPO model loading skipped")
+            self.logger.info("Lowest-delay baseline selected; PPO model loading skipped")
+        if self.routing_mode == "minhop":
+            self.logger.info("Min-hop baseline selected; PPO model loading skipped")
         self.monitor_thread = hub.spawn(self._monitor)
 
     def _load_policy(self):
@@ -61,8 +65,7 @@ class QosPpoController(app_manager.RyuApp):
             self.logger.info("Loaded PPO policy from %s.zip", MODEL_PATH)
             return model
         except Exception as error:
-            self.logger.warning("PPO policy unavailable (%s); controller will use lowest-utilization fallback", error)
-            return None
+            raise RuntimeError(f"PPO policy failed to load from {MODEL_PATH}: {error}") from error
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, event):
@@ -84,18 +87,22 @@ class QosPpoController(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, event):
+        dpid = event.msg.datapath.id
         now = time.monotonic()
-        interval = max(now - self.last_sample_time, 0.001)
+        previous = self.last_sample_time.get(dpid)
         for stat in event.msg.body:
             if stat.port_no > event.msg.datapath.ofproto.OFPP_MAX:
                 continue
-            key = (event.msg.datapath.id, stat.port_no)
-            byte_delta = max(stat.tx_bytes - self.port_bytes[key], 0)
+            key = (dpid, stat.port_no)
+            # Skip the first sample per switch so the raw counter is not read as a spike.
+            if previous is not None:
+                byte_delta = max(stat.tx_bytes - self.port_bytes[key], 0)
+                interval = max(now - previous, 0.001)
+                # Normalized utilization requires link capacity from the topology map.
+                # Until that map is connected, retain a safe bounded activity score.
+                self.port_utilization[key] = min((byte_delta * 8 / interval) / 100_000_000, 1.0)
             self.port_bytes[key] = stat.tx_bytes
-            # Normalized utilization requires link capacity from the topology map.
-            # Until that map is connected, retain a safe bounded activity score.
-            self.port_utilization[key] = min((byte_delta * 8 / interval) / 100_000_000, 1.0)
-        self.last_sample_time = now
+        self.last_sample_time[dpid] = now
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, event):
@@ -184,13 +191,13 @@ class QosPpoController(app_manager.RyuApp):
 
     def choose_path(self, observation: np.ndarray) -> int:
         """Return candidate-path index; call this from the topology-aware flow installer."""
+        if self.routing_mode == "minhop":
+            return int(min(range(len(CANDIDATE_PATHS)), key=lambda i: len(CANDIDATE_PATHS[i])))
         if self.routing_mode == "shortest":
             delays = [
                 sum(LINKS[frozenset((left, right))][1] for left, right in zip(path, path[1:]))
                 for path in CANDIDATE_PATHS
             ]
             return int(min(range(len(delays)), key=delays.__getitem__))
-        if self.policy is None:
-            return 0
         action, _ = self.policy.predict(observation.astype(np.float32), deterministic=True)
         return int(action)
