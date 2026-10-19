@@ -64,7 +64,8 @@ PYTHONPATH=src pytest -q
 `--compare-all` reports throughput, maximum utilization, delay, estimated
 packet-loss rate, feasibility, decision time, and route churn for shortest
 path, min-hop, standard PPO, and predictive PPO under normal traffic and the
-controlled failure scenario.
+controlled failure scenario. It prints the two simulation result tables:
+**Normal traffic scenario** and **Fault tolerance: s2-s4 fails at step 60**.
 
 In separate terminals, start the controller and emulated network:
 
@@ -89,7 +90,7 @@ mininet> h4 iperf3 -s &
 mininet> h1 iperf3 -c 10.0.0.4 -u -b 10M -t 30
 ```
 
-## Live PPO versus shortest-path experiment
+## Live routing-policy experiment
 
 Use the same Mininet topology and a 20 Mbps UDP offered load for each run.
 PPO uses the default controller mode:
@@ -106,6 +107,16 @@ always selects candidate 2 (`s1-s2-s3-s4`), whose `s2-s3` link is limited to
 PYTHONPATH=src ROUTING_MODE=shortest ryu-manager sdn_rl.ryu_app
 ```
 
+For the min-hop baseline, restart the controller with:
+
+```bash
+PYTHONPATH=src ROUTING_MODE=minhop ryu-manager sdn_rl.ryu_app
+```
+
+Min-hop selects candidate 0 (`s1-s2-s4`). Its route has a 25 Mbps bottleneck,
+but it fails when `s2-s4` is taken down because fixed baselines do not perform
+automatic recovery.
+
 In each Mininet run, use:
 
 ```bash
@@ -120,8 +131,9 @@ Record received bitrate, jitter, packet loss, and the selected controller path.
 Compare these routing choices under the same flows and link-failure scenario:
 
 1. shortest path (baseline)
-2. PPO policy using current QoS state
-3. PPO policy with the prediction feature enabled (the next milestone)
+2. min-hop (baseline)
+3. PPO policy using current QoS state
+4. PPO policy with the prediction feature enabled
 
 Record throughput, end-to-end delay, packet loss, maximum link utilization, and controller decision time.
 
