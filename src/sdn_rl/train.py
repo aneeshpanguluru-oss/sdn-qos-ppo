@@ -8,7 +8,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.monitor import Monitor
 
-from .config import MODEL_PATH
+from .config import MODEL_PATH, PREDICTIVE_MODEL_PATH
 from .traffic_env import QosRoutingEnv
 
 
@@ -16,9 +16,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--timesteps", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--predictive", action="store_true", help="Train with predicted next-interval utilization features.")
+    parser.add_argument("--failure-scenario", action="store_true", help="Inject an s2-s4 failure halfway through each training episode.")
     args = parser.parse_args()
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    environment = make_vec_env(lambda: Monitor(QosRoutingEnv(seed=args.seed)), n_envs=4, seed=args.seed)
+    model_path = PREDICTIVE_MODEL_PATH if args.predictive else MODEL_PATH
+    environment = make_vec_env(lambda: Monitor(QosRoutingEnv(seed=args.seed, predictive=args.predictive, failure_scenario=args.failure_scenario)), n_envs=4, seed=args.seed)
     model = PPO(
         "MlpPolicy",
         environment,
@@ -32,8 +35,8 @@ def main() -> None:
         seed=args.seed,
     )
     model.learn(total_timesteps=args.timesteps)
-    model.save(str(MODEL_PATH))
-    print(f"Saved PPO model to {MODEL_PATH}.zip")
+    model.save(str(model_path))
+    print(f"Saved {'predictive ' if args.predictive else ''}PPO model to {model_path}.zip")
 
 
 if __name__ == "__main__":

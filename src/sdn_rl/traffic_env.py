@@ -22,9 +22,11 @@ class QosRoutingEnv(gym.Env):
 
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, episode_steps: int = EPISODE_STEPS, seed: int | None = None):
+    def __init__(self, episode_steps: int = EPISODE_STEPS, seed: int | None = None, predictive: bool = False, failure_scenario: bool = False):
         super().__init__()
         self.episode_steps = episode_steps
+        self.predictive = predictive
+        self.failure_scenario = failure_scenario
         self.rng = np.random.default_rng(seed)
         self.link_load: dict[frozenset[str], float] = {}
         self.background_load: dict[frozenset[str], float] = {}
@@ -32,7 +34,8 @@ class QosRoutingEnv(gym.Env):
         self.previous_action: int | None = None
         self.demand_mbps = 0.0
         self.step_count = 0
-        feature_count = len(CANDIDATE_PATHS) * 4 + 1
+        self.previous_path_utilization = [0.0] * len(CANDIDATE_PATHS)
+        feature_count = len(CANDIDATE_PATHS) * (5 if predictive else 4) + 1
         self.observation_space = spaces.Box(0.0, 1.0, shape=(feature_count,), dtype=np.float32)
         self.action_space = spaces.Discrete(len(CANDIDATE_PATHS))
 
@@ -49,13 +52,15 @@ class QosRoutingEnv(gym.Env):
         self.previous_action = None
         self.step_count = 0
         self._sample_demand()
-        return self._observation(), {}
+        initial_observation = self._observation()
+        self._remember_path_utilizations()
+        return initial_observation, {}
 
     def step(self, action: int):
         path = CANDIDATE_PATHS[int(action)]
         path_links = self._links_for_path(path)
         feasible = all(
-            self.link_load[link] + self.demand_mbps <= LINKS[link][0]
+            self._link_available(link) and self.link_load[link] + self.demand_mbps <= LINKS[link][0]
             for link in path_links
         )
 
@@ -101,7 +106,9 @@ class QosRoutingEnv(gym.Env):
             "loss_rate": loss,
             "feasible": feasible,
         }
-        return self._observation(), float(reward), terminated, False, info
+        observation = self._observation()
+        self._remember_path_utilizations()
+        return observation, float(reward), terminated, False, info
 
     def _sample_demand(self) -> None:
         self.demand_mbps = float(self.rng.uniform(2.0, MAX_DEMAND_MBPS))
@@ -114,6 +121,9 @@ class QosRoutingEnv(gym.Env):
         values = []
         for link in self._links_for_path(path):
             capacity, delay, base_loss = LINKS[link]
+            if not self._link_available(link):
+                values.append((1.0, delay, 1.0, 0.0))
+                continue
             utilization = min(self.link_load[link] / capacity, 1.5)
             dynamic_loss = base_loss + max(utilization - 0.75, 0.0) * 0.12
             values.append((utilization, delay, dynamic_loss, max(capacity - self.link_load[link], 0.0)))
@@ -121,11 +131,22 @@ class QosRoutingEnv(gym.Env):
 
     def _observation(self) -> np.ndarray:
         features: list[float] = []
-        for path in CANDIDATE_PATHS:
+        for index, path in enumerate(CANDIDATE_PATHS):
             max_util, delay, loss, residual = self._path_metrics(path)
             features.extend((min(max_util, 1.0), min(delay / 30.0, 1.0), min(loss / 0.15, 1.0), min(residual / MAX_DEMAND_MBPS, 1.0)))
+            if self.predictive:
+                # One-step momentum forecast: current load plus its latest change.
+                previous = self.previous_path_utilization[index]
+                features.append(float(np.clip(max_util + (max_util - previous), 0.0, 1.0)))
         features.append(self.demand_mbps / MAX_DEMAND_MBPS)
         return np.asarray(features, dtype=np.float32)
+
+    def _remember_path_utilizations(self) -> None:
+        self.previous_path_utilization = [self._path_metrics(path)[0] for path in CANDIDATE_PATHS]
+
+    def _link_available(self, link: frozenset[str]) -> bool:
+        # Controlled fault injection halfway through each episode.
+        return not (self.failure_scenario and self.step_count >= self.episode_steps // 2 and link == frozenset(("s2", "s4")))
 
     def _advance_background_traffic(self) -> None:
         remaining_flows = []

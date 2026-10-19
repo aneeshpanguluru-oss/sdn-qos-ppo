@@ -2,6 +2,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_PATH = PROJECT_ROOT / "models" / "ppo_qos_router"
+PREDICTIVE_MODEL_PATH = PROJECT_ROOT / "models" / "ppo_predictive_router"
 
 # The policy selects one of these candidate paths from s1 to s4.  Keeping a
 # fixed action space makes it suitable for Stable-Baselines3's PPO algorithm.
@@ -22,3 +23,19 @@ LINKS = {
 
 MAX_DEMAND_MBPS = 20.0
 EPISODE_STEPS = 120
+
+# Physical port capacities used by the Mininet topology. Host-facing ports are
+# 100 Mbps; inter-switch ports use the bandwidth configured in topology.py.
+PORT_CAPACITY_MBPS = {
+    (1, 1): 100.0, (2, 1): 100.0, (3, 1): 100.0, (4, 1): 100.0,
+    (1, 2): 30.0, (2, 2): 30.0,
+    (2, 3): 25.0, (4, 2): 25.0,
+    (1, 3): 20.0, (3, 2): 20.0,
+    (3, 3): 30.0, (4, 3): 30.0,
+    (2, 4): 15.0, (3, 4): 15.0,
+}
+
+
+def get_port_capacity_bps(dpid: int, port: int) -> float:
+    """Return the actual configured capacity for a switch port in bits/s."""
+    return PORT_CAPACITY_MBPS.get((dpid, port), 100.0) * 1_000_000

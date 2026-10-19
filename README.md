@@ -45,8 +45,26 @@ Compare PPO to the fixed shortest-path baseline on identical simulated
 traffic scenarios:
 
 ```bash
-PYTHONPATH=src python -m sdn_rl.evaluate --model models/ppo_qos_router.zip --compare-shortest
+PYTHONPATH=src python -m sdn_rl.evaluate --model models/ppo_qos_router.zip
 ```
+
+## Predictive QoS and fault-tolerance experiment
+
+The controller uses actual configured port capacities, not a fixed 100 Mbps
+divider. Train the predictive policy with one-step utilization momentum and a
+mid-episode `s2-s4` link failure:
+
+```bash
+PYTHONPATH=src python -m sdn_rl.train --failure-scenario --timesteps 100000
+PYTHONPATH=src python -m sdn_rl.train --predictive --failure-scenario --timesteps 100000
+PYTHONPATH=src python -m sdn_rl.evaluate --compare-all --episodes 50
+PYTHONPATH=src pytest -q
+```
+
+`--compare-all` reports throughput, maximum utilization, delay, estimated
+packet-loss rate, feasibility, decision time, and route churn for shortest
+path, min-hop, standard PPO, and predictive PPO under normal traffic and the
+controlled failure scenario.
 
 In separate terminals, start the controller and emulated network:
 
@@ -113,3 +131,33 @@ The included Ryu app uses the fixed, explicit switch IDs and port map in the
 provided Mininet topology to install a policy-selected OpenFlow path for the
 `h1` to `h4` test flow. Expanding this initial proof of concept to arbitrary
 host pairs is the next controller milestone.
+
+Use `ROUTING_MODE=predictive` to load the predictive model in Ryu after it has
+been trained. The controller then includes a one-interval utilization forecast
+in the policy state.
+
+## Live link-failure recovery
+
+The Ryu controller listens for Mininet/OpenFlow port-down events. When the
+`s2-s4` link fails, it removes the managed `h1` to `h4` rules and installs the
+best viable candidate path immediately. Run a 60-second test in the Mininet
+CLI, then break the link after about ten seconds:
+
+```bash
+mininet> h4 iperf3 -s &
+mininet> h1 iperf3 -c 10.0.0.4 -u -b 20M -t 60 &
+mininet> link s2 s4 down
+```
+
+The controller log should report `Link failure detected` followed by
+`Recovery selected candidate 1: [1, 3, 4]`. Restore the test topology with
+`link s2 s4 up`.
+
+For a fixed-baseline failure test, recovery is disabled automatically for the
+`minhop` and `shortest` modes. This intentionally leaves traffic on the
+chosen route; `RECOVERY_ENABLED=0` can also disable recovery for a PPO
+ablation:
+
+```bash
+RECOVERY_ENABLED=0 ROUTING_MODE=minhop FLOW_DEMAND_MBPS=20 ryu-manager sdn_rl.ryu_app
+```
