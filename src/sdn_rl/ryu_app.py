@@ -55,6 +55,7 @@ class QosPpoController(app_manager.RyuApp):
         self.previous_port_utilization = defaultdict(float)
         self.last_sample_time = {}
         self.failed_links: set[frozenset[str]] = set()
+        self.last_logged_candidate: dict[tuple[str, str], int] = {}
         self.routing_mode = os.environ.get("ROUTING_MODE", "ppo").lower()
         if self.routing_mode not in {"ppo", "predictive", "shortest", "minhop"}:
             raise ValueError("ROUTING_MODE must be 'ppo', 'predictive', 'shortest' or 'minhop'")
@@ -67,7 +68,6 @@ class QosPpoController(app_manager.RyuApp):
         requested_recovery = os.environ.get("RECOVERY_ENABLED", "1") not in {"0", "false", "False"}
         self.recovery_enabled = self.routing_mode in {"ppo", "predictive"} and requested_recovery
         self.logger.info("Routing mode: %s", self.routing_mode)
-        self.logger.info("Automatic recovery: %s", "enabled" if self.recovery_enabled else "disabled")
         self.policy = self._load_policy() if self.routing_mode in {"ppo", "predictive"} else None
         if self.routing_mode == "shortest":
             self.logger.info("Lowest-delay baseline selected; PPO model loading skipped")
@@ -135,14 +135,11 @@ class QosPpoController(app_manager.RyuApp):
             if link not in self.failed_links:
                 self.failed_links.add(link)
                 if self.recovery_enabled:
-                    self.logger.warning("Link failure detected: %s. Reinstalling managed route.", sorted(link))
+                    self.logger.warning("Link failure detected: %s", sorted(link))
                     self._remove_managed_flows()
                     self._install_recovery_routes()
-                else:
-                    self.logger.warning("Link failure detected: %s. Automatic recovery is disabled.", sorted(link))
         elif link in self.failed_links:
             self.failed_links.remove(link)
-            self.logger.info("Link restored: %s", sorted(link))
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, event):
@@ -171,7 +168,10 @@ class QosPpoController(app_manager.RyuApp):
         path = [SWITCH_ID[name] for name in CANDIDATE_PATHS[candidate]]
         if not forward:
             path.reverse()
-        self.logger.info("%s -> %s selected candidate %s: %s", source_ip, destination_ip, candidate, path)
+        flow_key = (source_ip, destination_ip)
+        if self.last_logged_candidate.get(flow_key) != candidate:
+            self.logger.info("%s -> %s selected candidate %s: %s", source_ip, destination_ip, candidate, path)
+            self.last_logged_candidate[flow_key] = candidate
         self._install_path(path, source_ip, destination_ip, ethernet_frame.ethertype)
 
         # Forward the triggering packet immediately; later packets use the
@@ -271,17 +271,21 @@ class QosPpoController(app_manager.RyuApp):
 
     def choose_path(self, observation: np.ndarray) -> int:
         """Return candidate-path index; call this from the topology-aware flow installer."""
-        available = [index for index, path in enumerate(CANDIDATE_PATHS) if all(frozenset((left, right)) not in self.failed_links for left, right in zip(path, path[1:]))]
-        if not available:
-            raise RuntimeError("No viable candidate path remains after link failure")
+        # Fixed baselines intentionally remain fixed after a fault. They are
+        # therefore true non-recovering references for the PPO comparison.
         if self.routing_mode == "minhop":
-            return int(min(available, key=lambda i: len(CANDIDATE_PATHS[i])))
+            return int(min(range(len(CANDIDATE_PATHS)), key=lambda i: len(CANDIDATE_PATHS[i])))
         if self.routing_mode == "shortest":
             delays = [
                 sum(LINKS[frozenset((left, right))][1] for left, right in zip(path, path[1:]))
                 for path in CANDIDATE_PATHS
             ]
-            return int(min(available, key=delays.__getitem__))
+            return int(min(range(len(delays)), key=delays.__getitem__))
+
+        # PPO modes receive the failed-link mask and may choose a safe route.
+        available = [index for index, path in enumerate(CANDIDATE_PATHS) if all(frozenset((left, right)) not in self.failed_links for left, right in zip(path, path[1:]))]
+        if not available:
+            raise RuntimeError("No viable candidate path remains after link failure")
         action, _ = self.policy.predict(observation.astype(np.float32), deterministic=True)
         if int(action) in available:
             return int(action)
